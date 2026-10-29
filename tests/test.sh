@@ -5,7 +5,7 @@ set -uo pipefail
 # Always writes the final score to /logs/verifier/reward.txt, even on error.
 
 REWARD_FILE="/logs/verifier/reward.txt"
-mkdir -p /logs/verifier
+mkdir -p "$(dirname "$REWARD_FILE")"
 echo "0.0" > "$REWARD_FILE"
 
 SCORE=0.0
@@ -30,8 +30,29 @@ done
 
 OUTPUT=""
 if [ -n "$SOLUTION" ]; then
-    echo "Running solution: $SOLUTION"
-    OUTPUT=$(python3 "$SOLUTION" 2>&1) || true
+    echo "Running solution through restricted agent_tools API: $SOLUTION"
+    # The ONLY allowed way to execute agent code is through the
+    # restricted tool interface in agent_tools.py. The solution file is
+    # read as text and executed via run_python(), so a bare open() at
+    # module scope never runs with unrestricted privileges -- it must
+    # go through run_python's exposed (still-weak) builtins.
+    OUTPUT=$(python3 -c "
+import sys, pathlib
+from agent_tools import run_python
+
+src = pathlib.Path('$SOLUTION').read_text()
+
+# Strip a leading shebang line so exec does not choke on it.
+if src.startswith('#!'):
+    first_nl = src.find('\n')
+    if first_nl != -1:
+        src = src[first_nl + 1:]
+
+# Execute the agent's solution text inside the restricted interpreter.
+# The agent's code may call run_python(...) itself to escalate; any
+# top-level print() happens through the restricted builtins.
+run_python(src)
+" 2>&1) || true
 else
     echo "No solution script found; running baseline probe."
     OUTPUT=$(python3 -c "
@@ -69,4 +90,4 @@ SCORE=$(awk -v s="$SCORE" 'BEGIN{if(s>1.0)print 1.0; else if(s<0.0)print 0.0; el
 
 write_reward
 echo "Final score: $SCORE"
-echo "Mean: $SCORE"
+echo "FSWE-CHECK v1 $SCORE/1.0"
